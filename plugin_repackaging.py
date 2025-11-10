@@ -13,6 +13,7 @@ import yaml
 from pathlib import Path
 from typing import Optional
 import requests
+from datetime import datetime
 
 class DifyPluginRepackager:
     DEFAULT_GITHUB_API_URL = "https://github.com"
@@ -87,6 +88,10 @@ class DifyPluginRepackager:
                     manifest_data = yaml.safe_load(f)
                 # 修改 author 字段
                 manifest_data['author'] = "xcsf"
+                created_at = manifest_data['created_at']
+                print(created_at)
+                manifest_data['created_at'] = self.normalize_datetime_str(created_at)
+                
                 # 保存修改后的 yaml
                 with open("manifest.yaml", "w", encoding='utf-8') as f:
                     yaml.safe_dump(manifest_data, f, allow_unicode=True)
@@ -190,6 +195,35 @@ class DifyPluginRepackager:
     def process_local(self, package_path: str):
         """Process local plugin repackaging."""
         return self.repackage(Path(package_path).absolute())
+
+    def normalize_datetime_str(self, dt_input: str) -> str:
+        # 如果是 datetime 对象，直接转为 ISO 格式（带 T）
+        if isinstance(dt_input, datetime):
+            return dt_input.isoformat()
+        
+        # 如果不是字符串，原样返回（或转为字符串）
+        if not isinstance(dt_input, str):
+            return str(dt_input)
+        
+        # 如果已经是合法 ISO 格式（含 T），直接返回
+        if 'T' in dt_input:
+            return dt_input
+        
+        # 尝试将空格替换为 T
+        if ' ' in dt_input:
+            parts = dt_input.split(' ', 1)
+            if len(parts) == 2:
+                candidate = parts[0] + 'T' + parts[1]
+                try:
+                    # 验证是否是合法时间（Python 3.13 支持 +08:00）
+                    datetime.fromisoformat(candidate)
+                    return candidate
+                except ValueError:
+                    pass
+        
+        # 无法识别，返回原字符串
+        return dt_input
+
 
 def main():
     parser = argparse.ArgumentParser(description="Dify Plugin Repackaging Tool")

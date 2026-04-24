@@ -48,7 +48,7 @@ pip install requests pyyaml
 基本命令行：
 
 ```powershell
-python plugin_repackaging.py [-p 平台] [-s 后缀] <source> <args...>
+python plugin_repackaging.py [-p 平台] [-s 后缀] [-e 额外包] <source> <args...>
 
 # source: market | github | local
 ```
@@ -57,6 +57,7 @@ python plugin_repackaging.py [-p 平台] [-s 后缀] <source> <args...>
 
 - `-p, --platform`：为 pip 下载指定平台，比如 `manylinux2014_x86_64`。脚本会把其转成 pip 参数：`--platform <platform> --only-binary=:all:`，并在 `pip download` 时使用。可用于交叉打包依赖。
 - `-s, --suffix`：输出包后缀，默认 `offline`，最终输出文件名样式为 `<plugin>-<suffix>.difypkg`。
+- `-e, --extra`：额外要一起下载并打包进 `wheels/` 的包（可重复传入，也支持逗号分隔）。例如：`-e "setuptools==80.9.0"`、`-e "ruff>=0.12.5,pytest>=8.4.1"`。这些包也会被写入/合并到 `requirements.txt`。
 
 source 依赖的附加参数：
 
@@ -72,6 +73,12 @@ source 依赖的附加参数：
 
 ```powershell
 python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 local .\your-plugin.difypkg
+```
+
+示例（指定平台 + 额外打包 dev 工具依赖）：
+
+```powershell
+# python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 -e "ruff>=0.12.5" -e "pytest>=8.4.1" -e "setuptools==80.9.0" -e "black" local .\langgenius-openai_api_compatible_0.0.45.difypkg
 ```
 
 示例（从 Dify 市场下载并打包）：
@@ -91,9 +98,10 @@ python plugin_repackaging.py github xcsf/my-repo v1.2.3 plugin-1.2.3.difypkg
 1. 将目标 `.difypkg` 解压到以包名命名的文件夹
 2. 修改 `manifest.yaml` 中的 `author`，并修改 `.verification.dify.json` 中的 `authorized_category`
 3. 使用 `pip download` 下载 `requirements.txt` 中列出的依赖到 `./wheels`
-4. 将 `requirements.txt` 改为离线安装引用：在最前面写入 `--no-index --find-links=./wheels/`
+4. 将 `requirements.txt` 改为离线安装引用：在最前面写入 `--no-index` 与 `-f ./wheels/`（两行），并把 `-e/--extra` 指定的包合并写入 `requirements.txt`
 5. 清理 `.difyignore` 或 `.gitignore` 中有关 `wheels/` 的忽略行
-6. 调用本地 `dify-plugin-<os>-<arch>` 工具执行 `plugin package` 并输出带后缀的 `.difypkg`
+6. 如果插件包含 `pyproject.toml`，会写入/更新 `[tool.uv]` 的离线配置：`no-index = true` 与 `find-links = ["./wheels/"]`，避免离线环境 uv 只读缓存导致依赖不可用
+7. 调用本地 `dify-plugin-<os>-<arch>` 工具执行 `plugin package` 并输出带后缀的 `.difypkg`
 
 ### 常见问题与排查建议
 

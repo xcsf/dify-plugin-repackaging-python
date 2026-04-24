@@ -35,6 +35,7 @@ class DifyPluginRepackager:
         
         self.pip_platform = ""
         self.package_suffix = "offline"
+        self.extra_packages = []
 
     def download_file(self, url: str, output_path: str) -> bool:
         """Download a file from URL to specified path."""
@@ -107,21 +108,53 @@ class DifyPluginRepackager:
 
             print("pip_platform:", self.pip_platform)
             # Download dependencies
+            requirements_path = Path("requirements.txt")
             pip_cmd = [
                 "pip", "download",
+                
                 *(self.pip_platform.split() if self.pip_platform else []),
-                "-r", "requirements.txt",
                 "-d", "./wheels",
                 "--index-url", self.pip_mirror_url,
                 "--trusted-host", "mirrors.aliyun.com"
             ]
+            if requirements_path.exists():
+                pip_cmd.extend(["-r", str(requirements_path)])
+            elif not self.extra_packages:
+                print("requirements.txt not found.")
+                return False
+
+            if self.extra_packages:
+                pip_cmd.extend(self.extra_packages)
             subprocess.run(pip_cmd, check=True)
-            # Modify requirements.txt
-            with open("requirements.txt", "r") as f:
-                content = f.read()
-            
-            with open("requirements.txt", "w") as f:
-                f.write("--no-index --find-links=./wheels/\n" + content)
+
+            existing_lines = []
+            if requirements_path.exists():
+                with open(requirements_path, "r", encoding="utf-8") as f:
+                    existing_lines = f.read().splitlines()
+
+            filtered_lines = [
+                line
+                for line in existing_lines
+                if not line.strip().startswith("--no-index")
+                and not line.strip().startswith("--find-links")
+                and not line.strip().startswith("-f")
+            ]
+            existing_reqs = {line.strip() for line in filtered_lines if line.strip()}
+            extra_lines = []
+            for pkg in self.extra_packages:
+                pkg_line = pkg.strip()
+                if not pkg_line or pkg_line in existing_reqs:
+                    continue
+                extra_lines.append(pkg_line)
+                existing_reqs.add(pkg_line)
+
+            new_lines = ["--no-index", "-f ./wheels/"]
+            if extra_lines:
+                new_lines.extend(extra_lines)
+            new_lines.extend(filtered_lines)
+            requirements_path.write_text("\n".join(new_lines).rstrip("\n") + "\n", encoding="utf-8")
+
+            self.ensure_uv_offline_settings(Path("pyproject.toml"))
 
             # Update ignore file
             ignore_path = Path(".difyignore" if Path(".difyignore").exists() else ".gitignore")
@@ -224,13 +257,74 @@ class DifyPluginRepackager:
         # 无法识别，返回原字符串
         return dt_input
 
+    def ensure_uv_offline_settings(self, pyproject_path: Path):
+        if not pyproject_path.exists():
+            return
+
+        content = pyproject_path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        section_start = None
+        for i, line in enumerate(lines):
+            if line.strip() == "[tool.uv]":
+                section_start = i
+                break
+
+        new_settings = ["no-index = true", "find-links = [\"./wheels/\"]"]
+
+        if section_start is None:
+            updated = content.rstrip("\n")
+            if updated:
+                updated += "\n\n"
+            updated += "[tool.uv]\n" + "\n".join(new_settings) + "\n"
+            pyproject_path.write_text(updated, encoding="utf-8")
+            return
+
+        section_end = len(lines)
+        for j in range(section_start + 1, len(lines)):
+            candidate = lines[j].strip()
+            if candidate.startswith("[") and candidate.endswith("]"):
+                section_end = j
+                break
+
+        section_lines = lines[section_start + 1 : section_end]
+        kept_lines = []
+        for line in section_lines:
+            stripped = line.strip()
+            if stripped.startswith("no-index") or stripped.startswith("no_index"):
+                continue
+            if stripped.startswith("find-links") or stripped.startswith("find_links"):
+                continue
+            kept_lines.append(line)
+
+        updated_lines = lines[: section_start + 1] + new_settings + kept_lines + lines[section_end:]
+        pyproject_path.write_text("\n".join(updated_lines).rstrip("\n") + "\n", encoding="utf-8")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Dify Plugin Repackaging Tool")
     parser.add_argument("-p", "--platform", help="Python packages platform for cross repackaging")
     parser.add_argument("-s", "--suffix", help="Output package suffix")
-    parser.add_argument("source", choices=["market", "github", "local"], help="Source of the plugin")
-    parser.add_argument("args", nargs="*", help="Additional arguments based on source type")
+    parser.add_argument(
+        "-e",
+        "--extra",
+        action="append",
+        help="Extra packages to include in wheels and requirements.txt, e.g. setuptools==80.9.0 (repeatable, comma-separated supported)",
+    )
+
+    subparsers = parser.add_subparsers(dest="source", required=True)
+
+    market_parser = subparsers.add_parser("market")
+    market_parser.add_argument("author")
+    market_parser.add_argument("name")
+    market_parser.add_argument("version")
+
+    github_parser = subparsers.add_parser("github")
+    github_parser.add_argument("repo")
+    github_parser.add_argument("release")
+    github_parser.add_argument("asset_name")
+
+    local_parser = subparsers.add_parser("local")
+    local_parser.add_argument("package_path")
 
     args = parser.parse_args()
     
@@ -240,26 +334,26 @@ def main():
         repackager.pip_platform = f"--platform {args.platform} --only-binary=:all:"
     if args.suffix:
         repackager.package_suffix = args.suffix
+    if args.extra:
+        extra_packages = []
+        for raw in args.extra:
+            if raw is None:
+                continue
+            parts = [p.strip() for p in raw.split(",")]
+            extra_packages.extend([p for p in parts if p])
+        repackager.extra_packages = extra_packages
 
     if args.source == "market":
-        if len(args.args) != 3:
-            print("Usage: market [plugin author] [plugin name] [plugin version]")
-            return 1
-        return 0 if repackager.process_market(*args.args) else 1
+        return 0 if repackager.process_market(args.author, args.name, args.version) else 1
         
     elif args.source == "github":
-        if len(args.args) != 3:
-            print("Usage: github [Github repo] [Release title] [Assets name (include .difypkg suffix)]")
-            return 1
-        return 0 if repackager.process_github(*args.args) else 1
+        return 0 if repackager.process_github(args.repo, args.release, args.asset_name) else 1
         
     elif args.source == "local":
-        if len(args.args) != 1:
-            print("Usage: local [difypkg path]")
-            return 1
-        return 0 if repackager.process_local(args.args[0]) else 1
+        return 0 if repackager.process_local(args.package_path) else 1
 
 if __name__ == "__main__":
     sys.exit(main())
 
-# python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 local ./your-plugin.difypkg
+
+# python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 -e "ruff>=0.12.5" -e "pytest>=8.4.1" -e "setuptools==80.9.0" -e "black" local .\langgenius-openai_api_compatible_0.0.45.difypkg

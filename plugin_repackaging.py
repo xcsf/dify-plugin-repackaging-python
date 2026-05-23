@@ -19,23 +19,25 @@ class DifyPluginRepackager:
     DEFAULT_GITHUB_API_URL = "https://github.com"
     DEFAULT_MARKETPLACE_API_URL = "https://marketplace.dify.ai"
     DEFAULT_PIP_MIRROR_URL = "https://mirrors.aliyun.com/pypi/simple"
+    # DEFAULT_PIP_MIRROR_URL = "https://pypi.org/simple/"
 
     def __init__(self):
         self.github_api_url = os.getenv("GITHUB_API_URL", self.DEFAULT_GITHUB_API_URL)
         self.marketplace_api_url = os.getenv("MARKETPLACE_API_URL", self.DEFAULT_MARKETPLACE_API_URL)
         self.pip_mirror_url = os.getenv("PIP_MIRROR_URL", self.DEFAULT_PIP_MIRROR_URL)
-        
+
         self.curr_dir = Path(__file__).parent.absolute()
         self.os_type = platform.system().lower()
         self.arch_name = platform.machine().lower()
-        
+
         # Determine command name based on OS and architecture
         arch_suffix = "arm64" if self.arch_name in ["arm64", "aarch64"] else "amd64"
         self.cmd_name = f"dify-plugin-{self.os_type}-{arch_suffix}"
-        
+
         self.pip_platform = ""
         self.package_suffix = "offline"
         self.extra_packages = []
+        self.override_packages = {}
 
     def download_file(self, url: str, output_path: str) -> bool:
         """Download a file from URL to specified path."""
@@ -65,6 +67,27 @@ class DifyPluginRepackager:
         except Exception as e:
             print(f"Extraction failed: {e}")
             return False
+
+    def build_sdist_fallback(self, package_spec: str, wheels_dir: Path) -> bool:
+        """Download sdist and build wheel for a package that lacks a pre-built wheel."""
+        print(f"  WARNING: No wheel for {package_spec}, building from source...")
+        if self.pip_platform:
+            platform_name = self.pip_platform.split("--platform ")[1].split()[0] if "--platform " in self.pip_platform else self.pip_platform
+            print(f"  WARNING: Target platform is {platform_name}, but built wheel may not be compatible.")
+        result = subprocess.run(
+            [
+                "pip", "wheel", package_spec,
+                "-w", str(wheels_dir),
+                "--index-url", self.pip_mirror_url,
+                "--trusted-host", "mirrors.aliyun.com",
+            ],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"  ERROR: Failed to build {package_spec}:")
+            print(result.stderr)
+            return False
+        return True
 
     def repackage(self, package_path: str):
         """Repackage a Dify plugin package."""
@@ -106,12 +129,35 @@ class DifyPluginRepackager:
                 with open(".verification.dify.json", "w", encoding='utf-8') as f:
                     json.dump(verify_data, f)
 
+            # Override packages in requirements.txt
+            import re
+            if self.override_packages:
+                print("override_packages:", self.override_packages)
+                requirements_path = Path("requirements.txt")
+                if requirements_path.exists():
+                    lines = requirements_path.read_text(encoding="utf-8").splitlines()
+                    new_lines = []
+                    for line in lines:
+                        stripped = line.strip()
+                        if not stripped or stripped.startswith("#"):
+                            new_lines.append(line)
+                            continue
+                        match = re.match(r"^([a-zA-Z0-9_-]+)\s*(.*)", stripped.split(";")[0])
+                        if match:
+                            pkg_name = match.group(1).lower()
+                            if pkg_name in self.override_packages:
+                                print(f"  Override {stripped} -> {self.override_packages[pkg_name]}")
+                                new_lines.append(self.override_packages[pkg_name])
+                                continue
+                        new_lines.append(line)
+                    requirements_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
             print("pip_platform:", self.pip_platform)
             # Download dependencies
             requirements_path = Path("requirements.txt")
             pip_cmd = [
                 "pip", "download",
-                
+
                 *(self.pip_platform.split() if self.pip_platform else []),
                 "-d", "./wheels",
                 "--index-url", self.pip_mirror_url,
@@ -227,7 +273,14 @@ class DifyPluginRepackager:
 
     def process_local(self, package_path: str):
         """Process local plugin repackaging."""
-        return self.repackage(Path(package_path).absolute())
+        p = Path(package_path).resolve()
+        # On Windows, PowerShell may strip the backslash from `.\filename`,
+        # resulting in `.filename` which doesn't exist. Fix by stripping leading dot.
+        if not p.exists() and p.name.startswith("."):
+            alt = p.parent / p.name[1:]
+            if alt.exists():
+                p = alt
+        return self.repackage(p)
 
     def normalize_datetime_str(self, dt_input: str) -> str:
         # 如果是 datetime 对象，直接转为 ISO 格式（带 T）
@@ -310,6 +363,12 @@ def main():
         action="append",
         help="Extra packages to include in wheels and requirements.txt, e.g. setuptools==80.9.0 (repeatable, comma-separated supported)",
     )
+    parser.add_argument(
+        "-o",
+        "--override",
+        action="append",
+        help="Override a package in requirements.txt with specified version, e.g. greenlet==3.2.5 (repeatable)",
+    )
 
     subparsers = parser.add_subparsers(dest="source", required=True)
 
@@ -327,7 +386,7 @@ def main():
     local_parser.add_argument("package_path")
 
     args = parser.parse_args()
-    
+
     repackager = DifyPluginRepackager()
     
     if args.platform:
@@ -342,6 +401,20 @@ def main():
             parts = [p.strip() for p in raw.split(",")]
             extra_packages.extend([p for p in parts if p])
         repackager.extra_packages = extra_packages
+    if args.override:
+        import re as _re
+        for raw in args.override:
+            if raw is None:
+                continue
+            parts = [p.strip() for p in raw.split(",")]
+            for part in parts:
+                if not part:
+                    continue
+                match = _re.match(r"^([a-zA-Z0-9_-]+)\s*(.*)", part)
+                if match:
+                    pkg_name = match.group(1).lower()
+                    pkg_spec = part
+                    repackager.override_packages[pkg_name] = pkg_spec
 
     if args.source == "market":
         return 0 if repackager.process_market(args.author, args.name, args.version) else 1
@@ -357,3 +430,4 @@ if __name__ == "__main__":
 
 
 # python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 -e "ruff>=0.12.5" -e "pytest>=8.4.1" -e "setuptools==80.9.0" -e "black" local .\langgenius-openai_api_compatible_0.0.45.difypkg
+# python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 -o "greenlet==3.2.5" local .\langgenius-email_0.0.14.difypkg

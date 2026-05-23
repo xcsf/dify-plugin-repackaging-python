@@ -75,12 +75,13 @@ class DifyPluginRepackager:
         if self.pip_platform:
             platform_name = self.pip_platform.split("--platform ")[1].split()[0] if "--platform " in self.pip_platform else self.pip_platform
             print(f"  WARNING: Target platform is {platform_name}, but built wheel may not be compatible.")
+        trusted_host = re.search(r"://([^/]+)", self.pip_mirror_url).group(1) if "://" in self.pip_mirror_url else "mirrors.aliyun.com"
         result = subprocess.run(
             [
                 "pip", "wheel", package_spec,
                 "-w", str(wheels_dir),
                 "--index-url", self.pip_mirror_url,
-                "--trusted-host", "mirrors.aliyun.com",
+                "--trusted-host", trusted_host,
             ],
             capture_output=True, text=True,
         )
@@ -471,7 +472,7 @@ def main():
             for part in parts:
                 if not part:
                     continue
-                match = _re.match(r"^([a-zA-Z0-9_-]+)\s*(.*)", part)
+                match = re.match(r"^([a-zA-Z0-9_-]+)\s*(.*)", part)
                 if match:
                     pkg_name = match.group(1).lower()
                     pkg_spec = part

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import sys
 import platform
 import argparse
@@ -130,7 +131,6 @@ class DifyPluginRepackager:
                     json.dump(verify_data, f)
 
             # Override packages in requirements.txt
-            import re
             if self.override_packages:
                 print("override_packages:", self.override_packages)
                 requirements_path = Path("requirements.txt")
@@ -176,6 +176,7 @@ class DifyPluginRepackager:
             wheels_dir.mkdir(exist_ok=True)
             MAX_SDIST_BUILDS = 3
             sdist_build_count = 0
+            attempted_pkgs = set()
 
             while True:
                 result = subprocess.run(pip_cmd, capture_output=True, text=True)
@@ -201,14 +202,17 @@ class DifyPluginRepackager:
                 # Strip environment markers (e.g. "; platform_python_implementation == 'CPython'")
                 pkg_spec = failing_pkg.split(";")[0].strip()
 
+                if pkg_spec in attempted_pkgs:
+                    print(f"ERROR: Already attempted build for {pkg_spec}, failing.")
+                    print(f"Consider using -o to override the package version.")
+                    raise subprocess.CalledProcessError(result.returncode, pip_cmd, result.stdout, result.stderr)
+                attempted_pkgs.add(pkg_spec)
+
                 if not self.build_sdist_fallback(pkg_spec, wheels_dir):
                     # Build failed for reasons other than "no wheel available"
-                    sdist_build_count += 1
-                    if sdist_build_count >= MAX_SDIST_BUILDS:
-                        print(f"ERROR: Exceeded max sdist builds ({MAX_SDIST_BUILDS}).")
-                        print(f"Consider using -o to override the package version.")
-                        raise subprocess.CalledProcessError(result.returncode, pip_cmd, result.stdout, result.stderr)
-                    continue
+                    print(f"ERROR: Failed to build {pkg_spec} from source.")
+                    print(f"Consider using -o to override the package version.")
+                    raise subprocess.CalledProcessError(result.returncode, pip_cmd, result.stdout, result.stderr)
 
                 # Build succeeded: remove the package from requirements.txt
                 lines = requirements_path.read_text(encoding="utf-8").splitlines()
@@ -460,7 +464,6 @@ def main():
             extra_packages.extend([p for p in parts if p])
         repackager.extra_packages = extra_packages
     if args.override:
-        import re as _re
         for raw in args.override:
             if raw is None:
                 continue

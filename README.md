@@ -50,7 +50,7 @@ python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 local .\lang
 ```
 
 **替换无目标平台 wheel 的包版本**：
-当 `greenlet==3.3.0` 只有 `win_amd64` wheel 而没有 `manylinux` 发行版时：
+当 `greenlet==3.3.0` 没有 `manylinux` 预编译 wheel 时，sdist 回退会在 Windows 上构建出 `win_amd64` wheel（不兼容 Linux），此时需替换为有 `manylinux` wheel 的版本：
 ```powershell
 python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 -o "greenlet==3.2.5" local .\langgenius-email_0.0.14.difypkg
 ```

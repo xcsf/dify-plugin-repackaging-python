@@ -70,11 +70,19 @@ class DifyPluginRepackager:
             return False
 
     def build_sdist_fallback(self, package_spec: str, wheels_dir: Path) -> bool:
-        """Download sdist and build wheel for a package that lacks a pre-built wheel."""
+        """Download sdist and build wheel for a package that lacks a pre-built wheel.
+        Returns False if build fails or the resulting wheel is incompatible with target platform.
+        """
         print(f"  WARNING: No wheel for {package_spec}, building from source...")
-        if self.pip_platform:
-            platform_name = self.pip_platform.split("--platform ")[1].split()[0] if "--platform " in self.pip_platform else self.pip_platform
-            print(f"  WARNING: Target platform is {platform_name}, but built wheel may not be compatible.")
+
+        # Parse package name and version from spec (e.g. "greenlet==3.3.0" -> "greenlet", "3.3.0")
+        match = re.match(r"^([a-zA-Z0-9_-]+)==(.+)$", package_spec)
+        pkg_name = match.group(1) if match else package_spec
+        pkg_version = match.group(2) if match else None
+
+        # Record existing wheels to detect newly built ones
+        existing_wheels = set(wheels_dir.glob("*.whl")) if wheels_dir.exists() else set()
+
         trusted_host = re.search(r"://([^/]+)", self.pip_mirror_url).group(1) if "://" in self.pip_mirror_url else "mirrors.aliyun.com"
         result = subprocess.run(
             [
@@ -89,6 +97,41 @@ class DifyPluginRepackager:
             print(f"  ERROR: Failed to build {package_spec}:")
             print(result.stderr)
             return False
+
+        # Find the newly built wheel and validate platform compatibility
+        if pkg_version:
+            new_wheels = set(wheels_dir.glob("*.whl")) - existing_wheels
+            target_platform = ""
+            if self.pip_platform:
+                target_platform = self.pip_platform.split("--platform ")[1].split()[0] if "--platform " in self.pip_platform else self.pip_platform
+
+            for whl in new_wheels:
+                if not whl.name.lower().startswith(pkg_name.lower().replace("-", "_") + "-"):
+                    continue
+                if pkg_version and pkg_version not in whl.name:
+                    continue
+
+                # Check if wheel is platform-independent
+                parts = whl.name.replace("-", ".")
+                if "py3-none-any" in whl.name or "py2.py3-none-any" in whl.name:
+                    continue  # Universal wheel, always compatible
+
+                if target_platform:
+                    is_compatible = (
+                        target_platform in whl.name
+                        or "manylinux" in whl.name and "manylinux" in target_platform
+                        or "linux" in whl.name and "linux" in target_platform
+                    )
+                    if not is_compatible:
+                        whl.unlink()
+                        print(f"  ERROR: Built wheel {whl.name} is incompatible with target platform {target_platform}.")
+                        print(f"  The package {package_spec} has no {target_platform} distribution on PyPI.")
+                        print(f"  Consider using -o to override, e.g. -o \"{pkg_name}==<compatible_version>\"")
+                        return False
+
+            if target_platform:
+                print(f"  Built wheel validated for target platform: {target_platform}")
+
         return True
 
     def repackage(self, package_path: str):

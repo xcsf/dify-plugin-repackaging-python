@@ -153,7 +153,7 @@ class DifyPluginRepackager:
                     requirements_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
             print("pip_platform:", self.pip_platform)
-            # Download dependencies
+            # Download dependencies with sdist fallback for missing wheels
             requirements_path = Path("requirements.txt")
             pip_cmd = [
                 "pip", "download",
@@ -171,7 +171,65 @@ class DifyPluginRepackager:
 
             if self.extra_packages:
                 pip_cmd.extend(self.extra_packages)
-            subprocess.run(pip_cmd, check=True)
+
+            wheels_dir = Path("./wheels")
+            wheels_dir.mkdir(exist_ok=True)
+            MAX_SDIST_BUILDS = 3
+            sdist_build_count = 0
+
+            while True:
+                result = subprocess.run(pip_cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    break
+
+                if sdist_build_count >= MAX_SDIST_BUILDS:
+                    print(f"ERROR: Exceeded max sdist builds ({MAX_SDIST_BUILDS}).")
+                    print(result.stderr)
+                    raise subprocess.CalledProcessError(result.returncode, pip_cmd, result.stdout, result.stderr)
+
+                # Extract the failing package name from stderr
+                match = re.search(
+                    r"(?:Could not find a version that satisfies the requirement|No matching distribution found for)\s+(\S+)",
+                    result.stderr,
+                )
+                if not match:
+                    # Non-package-missing error, fail immediately
+                    print(result.stderr)
+                    raise subprocess.CalledProcessError(result.returncode, pip_cmd, result.stdout, result.stderr)
+
+                failing_pkg = match.group(1)
+                # Strip environment markers (e.g. "; platform_python_implementation == 'CPython'")
+                pkg_spec = failing_pkg.split(";")[0].strip()
+
+                if not self.build_sdist_fallback(pkg_spec, wheels_dir):
+                    # Build failed for reasons other than "no wheel available"
+                    sdist_build_count += 1
+                    if sdist_build_count >= MAX_SDIST_BUILDS:
+                        print(f"ERROR: Exceeded max sdist builds ({MAX_SDIST_BUILDS}).")
+                        print(f"Consider using -o to override the package version.")
+                        raise subprocess.CalledProcessError(result.returncode, pip_cmd, result.stdout, result.stderr)
+                    continue
+
+                # Build succeeded: remove the package from requirements.txt
+                lines = requirements_path.read_text(encoding="utf-8").splitlines()
+                filtered = [
+                    line for line in lines
+                    if not re.match(rf"^{re.escape(pkg_spec)}\b", line.strip().split(";")[0], re.IGNORECASE)
+                ]
+                requirements_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+                sdist_build_count += 1
+
+                # Rebuild pip_cmd with updated requirements
+                pip_cmd = [
+                    "pip", "download",
+                    *(self.pip_platform.split() if self.pip_platform else []),
+                    "-d", "./wheels",
+                    "--index-url", self.pip_mirror_url,
+                    "--trusted-host", "mirrors.aliyun.com",
+                    "-r", str(requirements_path),
+                ]
+                if self.extra_packages:
+                    pip_cmd.extend(self.extra_packages)
 
             existing_lines = []
             if requirements_path.exists():

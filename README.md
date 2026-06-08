@@ -1,68 +1,65 @@
-## Dify 插件重新打包工具
+## Dify 插件离线重新打包工具
 
-### 功能
+跨平台直接重新打包体验一般，建议使用 Docker 方式执行。
 
-下载 Dify 插件（.difypkg）并重新打包，包括：
-- 修改插件的 `author` 和 `authorized_category` 为 `xcsf`
-- 离线下载 Python 依赖（`wheels/`），修改 `requirements.txt` 为离线安装
-- 更新 `pyproject.toml` 的 `[tool.uv]` 离线配置
-- 规范化 `created_at` 日期格式（ISO 8601）
-- 当预编译 wheel 不存在时，自动下载源码包并构建 wheel（sdist 回退）
-- 验证构建的 wheel 与目标平台兼容性，不兼容时给出明确提示
-- 调用 `dify-plugin-<os>-<arch>` 重新打包输出
+本项目为以下项目的 Fork，用于方便自行维护与定制：
+https://github.com/kurokobo/dify-plugin-offline-packager
 
-### 安装
+---
 
-```powershell
-pip install requests pyyaml
+## 使用方式（Docker Compose）
+
+统一入口命令：
+
+```bash
+docker compose run --rm packager <参数> "<值>"
 ```
 
-### 前置条件
+---
 
-- `dify-plugin-<os>-<arch>` 可执行文件需放在脚本同目录（如 `dify-plugin-windows-amd64`）
+## 从 Dify Marketplace 生成离线包
 
-### 基本用法
+参数：`--marketplace`
 
-```powershell
-python plugin_repackaging.py [-p 平台] [-s 后缀] [-e 额外包] [-o 替换包] <来源> <参数>
+格式：`author/name:version`
+
+```bash
+docker compose run --rm packager --marketplace "langgenius/openai:0.3.2"
 ```
 
-| 参数 | 说明 | 示例 |
-|------|------|------|
-| `-p, --platform` | pip 交叉打包目标平台 | `manylinux2014_x86_64` |
-| `-s, --suffix` | 输出文件名后缀，默认 `offline` | `linux-amd64` |
-| `-e, --extra` | 额外下载并打包的包，可重复或逗号分隔 | `-e "setuptools==80.9.0"` |
-| `-o, --override` | 替换 requirements.txt 中不存在或无目标平台 wheel 的包版本 | `-o "greenlet==3.2.5"` |
+---
 
-### 来源类型
+## 从 GitHub Releases 生成离线包
 
-| 来源 | 格式 | 示例 |
-|------|------|------|
-| `market` | `market [author] [name] [version]` | `python plugin_repackaging.py market langgenius email 0.0.14` |
-| `github` | `github [repo] [release] [asset_name]` | `python plugin_repackaging.py github user/repo v1.0.0 plugin.difypkg` |
-| `local` | `local [difypkg路径]` | `python plugin_repackaging.py local .\langgenius-email_0.0.14.difypkg` |
+参数：`--github`
 
-### 常用示例
+格式：`owner/repo:tag:asset.difypkg`
 
-**本地重新打包**（Windows -> Linux）：
-```powershell
-python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 local .\langgenius-email_0.0.14.difypkg
+```bash
+docker compose run --rm packager --github "junjiem/dify-plugin-agent-mcp_sse:0.2.4:agent-mcp_sse.difypkg"
 ```
 
-**替换无目标平台 wheel 的包版本**：
-当 `greenlet==3.3.0` 没有 `manylinux` 预编译 wheel 时，sdist 回退会在 Windows 上构建出 `win_amd64` wheel（不兼容 Linux），此时需替换为有 `manylinux` wheel 的版本：
-```powershell
-python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 -o "greenlet==3.2.5" local .\langgenius-email_0.0.14.difypkg
+---
+
+## 从本地 .difypkg 文件重新打包
+
+参数：`--local`
+
+将 `.difypkg` 文件放入 `./difypkg/` 目录后执行：
+
+```bash
+docker compose run --rm packager --local "difypkg/my-plugin.difypkg"
 ```
 
-**额外打包 dev 工具依赖**：
-```powershell
-python plugin_repackaging.py -p manylinux2014_x86_64 -s linux-amd64 -e "ruff>=0.12.5" -e "pytest>=8.4.1" -e "setuptools==80.9.0" -e "black" local .\langgenius-openai_api_compatible_0.0.45.difypkg
-```
+---
 
-### 注意事项
+## Dify 平台配置（安装离线包时可能需要）
 
-- **PowerShell 路径**：使用 `.\\文件名` 或绝对路径，避免 `.\` 被 PowerShell 吞掉反斜杠
-- **sdist 自动回退**：当 pip 找不到指定平台的预编译 wheel 时，会自动下载源码包并构建 wheel。构建后会验证 wheel 与目标平台是否兼容，不兼容的 wheel 会被删除并给出明确错误提示。最多尝试 3 个包，超过请检查包版本或使用 `-o` 替换
-- **pip 下载失败**：设置 `PIP_MIRROR_URL` 环境变量切换镜像源，默认使用阿里云镜像
-- **插件安装限制**：在 Dify `.env` 中设置 `FORCE_VERIFYING_SIGNATURE=false` 允许安装未审核插件，`PLUGIN_MAX_PACKAGE_SIZE=524288000` 允许最大 500M
+安装离线打包的插件时，可能需要调整 Dify 的 `.env` 配置项：
+
+| 配置项                                 | 建议值      | 说明                       |
+| -------------------------------------- | ----------- | -------------------------- |
+| `FORCE_VERIFYING_SIGNATURE`            | `false`     | 允许安装未签名插件         |
+| `ENFORCE_LANGGENIUS_PLUGIN_SIGNATURES` | `false`     | 允许安装未签名的官方插件包 |
+| `PLUGIN_MAX_PACKAGE_SIZE`              | `524288000` | 允许插件包最大 500MB       |
+| `NGINX_CLIENT_MAX_BODY_SIZE`           | `500M`      | 提高 Nginx 上传限制        |
